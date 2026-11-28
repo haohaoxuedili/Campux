@@ -194,6 +194,16 @@ export async function readTenantOperateMode(client: MetadataClient, tenantId: st
 // 用粘性标记而不是当前模式：切回 bot 后历史事实仍在，提示口径保持一致。
 export const operateEverManualKey = "operate_ever_manual";
 
+/**
+ * 读取粘性标记，并在标记缺失时从可靠历史自愈：
+ *
+ * 标记是本 PR 新增的，存量数据里没有这一行。两类墙确实经历过无 Bot 模式：
+ * 1. 当前仍在 manual 的墙（operate_mode=manual 就是直接证据）；
+ * 2. 已经切回 bot、但审计日志里有 `tenant.operate_mode.update` 且
+ *    `operateMode: "manual"` 的墙（切换动作都会留审计）。
+ * 缺行时按这两条推断并**回写**标记——否则这些墙的用户永远看不到合并入口，
+ * 且切回 bot 后审计证据会被当前模式掩盖。回写让后续读取不再重复推断。
+ */
 export async function readTenantEverManual(client: MetadataClient, tenantId: string): Promise<boolean> {
   const entry = await client.tenantMetadata.findUnique({
     where: {
@@ -206,7 +216,48 @@ export async function readTenantEverManual(client: MetadataClient, tenantId: str
       value: true,
     },
   });
-  return entry?.value === true;
+  if (entry) {
+    return entry.value === true;
+  }
+
+  // 证据 1：当前就是 manual 模式。
+  const operateMode = await readTenantOperateMode(client, tenantId);
+  if (operateMode === "manual") {
+    await backfillEverManual(client, tenantId);
+    return true;
+  }
+
+  // 证据 2：审计日志里有切到 manual 的记录（写入用 prisma；client 可能是事务客户端）。
+  // 不用 JSON path 过滤：Prisma 只在 PostgreSQL/MySQL 上支持，SQLite 会直接报错；
+  // 模式切换审计每墙只有几条，全量拉回在 JS 里判断即可。
+  const modeAudits = await prisma.auditLog.findMany({
+    where: { tenantId, action: "tenant.operate_mode.update" },
+    select: { detail: true },
+    orderBy: { createdAt: "desc" },
+  });
+  const hasManualAudit = modeAudits.some((row) => {
+    const detail = row.detail as { operateMode?: unknown } | null;
+    return detail?.operateMode === "manual"
+      || (typeof detail?.operateMode === "string" && detail.operateMode.toLowerCase() === "manual");
+  });
+  if (hasManualAudit) {
+    await backfillEverManual(prisma, tenantId);
+    return true;
+  }
+  return false;
+}
+
+/** 把推断出的「曾经历过 manual」补写回标记，避免每次读取都查审计。 */
+async function backfillEverManual(client: MetadataClient, tenantId: string): Promise<void> {
+  try {
+    await client.tenantMetadata.upsert({
+      where: { tenantId_key: { tenantId, key: operateEverManualKey } },
+      update: { value: true },
+      create: { tenantId, key: operateEverManualKey, value: true },
+    });
+  } catch {
+    // 回写失败（例如 client 是事务内只读快照）不影响读取结果，下次读取再试。
+  }
 }
 
 // 无 Bot 模式专属：管理员手动发说说时用来拼配文的模板，以及配置进站/渲染用的墙号 QQ。

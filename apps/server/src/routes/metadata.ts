@@ -9,7 +9,7 @@ import { requireTenantContext, requireTenantRole } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { compressImageBuffer, uploadAttachmentBytes } from "../lib/attachments";
 import { prisma } from "../lib/prisma";
-import { readTenantPluginConfig, tenantPluginConfigKey } from "../lib/tenant-plugin-config";
+import { readTenantPluginConfig, writeTenantPluginConfig } from "../lib/tenant-plugin-config";
 import { readSvgAvatarDataUrl } from "../lib/svg-avatars";
 import { assertTenantLogoUpload, tenantLogoMaxBytes } from "../lib/tenant-logo-upload";
 import {
@@ -429,6 +429,36 @@ export function registerMetadataRoutes(app: FastifyInstance, config: CampuxConfi
       return reply.code(400).send({ message: "访问标识创建后不可修改" });
     }
 
+    // 「开启游客投稿并切换」：先把插件开关打开，再继续走本次 PATCH 的其余字段。
+    // 必须在读取插件配置之后立刻合并写回（read-merge-write），
+    // 且放在本处理器的最前面，缩小与并发插件保存互相覆盖的窗口。
+    // 失败时直接中止切换，避免出现「模式已切、插件没开」的半程状态。
+    if (body.enableGuestSubmissionOnManual === true) {
+      const currentConfig = await readTenantPluginConfig(prisma, context.selectedTenant.id);
+      try {
+        await writeTenantPluginConfig(
+          prisma,
+          context.selectedTenant.id,
+          { ...currentConfig, guestSubmission: { enabled: true } },
+        );
+        await writeAuditLog({
+          tenantId: context.selectedTenant.id,
+          actorId: context.user.id,
+          action: "tenant.plugin.guestSubmission.enable",
+          targetType: "tenant_plugin",
+          targetId: "guestSubmission",
+          detail: {
+            summary: "已启用",
+            enabledBefore: currentConfig.guestSubmission.enabled,
+            enabledAfter: true,
+            reason: "switch_operate_mode_manual",
+          },
+        });
+      } catch {
+        return reply.code(500).send({ message: "开启「游客投稿」失败，未切换运营模式，请重试或到「插件配置」手动开启" });
+      }
+    }
+
     const tenantUpdate: { name?: string; themeColor?: string } = {};
     if (body.tenantName !== undefined) tenantUpdate.name = body.tenantName;
     if (body.themeColor !== undefined) tenantUpdate.themeColor = body.themeColor;
@@ -494,15 +524,11 @@ export function registerMetadataRoutes(app: FastifyInstance, config: CampuxConfi
       if (body.operateMode === "manual") {
         updates.push({ key: operateEverManualKey, value: true });
       }
-      // 选择「开启游客投稿并切换」：把唯一进站通道一并打开，避免切完模式
-      // 还要再跑一趟插件配置，也省掉 409 → 确认 → 重试的绕路。
-      if (body.operateMode === "manual" && body.enableGuestSubmissionOnManual === true) {
-        const pluginConfig = await readTenantPluginConfig(prisma, context.selectedTenant.id);
-        updates.push({ key: tenantPluginConfigKey, value: { ...pluginConfig, guestSubmission: { enabled: true } } });
-      }
       // 切到无 Bot 模式时校验进站通道：没有游客投稿 / 聚合登录自动建号，
       // 普通用户就无法注册进墙，管理员也无法代为创建账号。
-      // 选择「开启游客投稿并切换」时本次请求已写入插件配置，无需再拦。
+      // 「开启游客投稿并切换」在服务端内部拆成两步：先走插件配置的专用写路径
+      // （read-merge-write，不会用旧快照覆盖并发保存的插件设置），再切模式；
+      // 这里收到该标志时跳过 409 拦截，由下方处理逻辑负责先开插件。
       if (body.operateMode === "manual" && body.enableGuestSubmissionOnManual !== true) {
         const ingress = await readTenantIngressAvailabilityFromDb(prisma, context.selectedTenant.id);
         if (!ingress.available && body.confirmNoIngress !== true) {

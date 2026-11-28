@@ -45,6 +45,8 @@ type SelectTenantResponse = {
   currentTenant: TenantSummary;
   currentMembership: CurrentMembership | null;
   activeBan: ActiveBan | null;
+  /** 服务端按新选的墙重算的合并提示标记（登录时可能还没选墙而给 false）。 */
+  shouldPromptAccountMerge?: boolean;
 };
 
 const tabPaths: Record<MainTab, string> = {
@@ -573,7 +575,14 @@ export function App() {
       currentMembership: data.currentMembership,
       activeBan: data.activeBan,
       needsTenantSelection: false,
+      // 选墙后服务端按该墙重算了合并提示：覆盖登录时「未选墙→false」的旧值。
+      shouldPromptAccountMerge: data.shouldPromptAccountMerge ?? false,
     } : current);
+    // 若登录时已关过弹窗（本会话不再弹），换墙后仍尊重该选择；
+    // 只有从未弹过时，新标记才会触发弹窗。
+    if (!accountMergeDismissed && data.shouldPromptAccountMerge) {
+      setAccountMergeDismissed(false);
+    }
     if (route.kind === "oauth") {
       return;
     }

@@ -1531,6 +1531,9 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
       currentTenant: toTenantSummary(tenant),
       currentMembership: { id: effectiveMembership.id, role: effectiveMembership.role },
       activeBan: membership ? toActiveBan(await findActiveBan(body.tenantId, context.user.id)) : null,
+      // 登录时还没选墙，completeLogin 可能给了 false；这里按新选的墙重算，
+      // 让多墙账号选完墙立即拿到与刷新页面一致的提示口径。
+      shouldPromptAccountMerge: shouldPromptAccountMerge(context.user) && await readTenantEverManual(prisma, body.tenantId),
     };
   });
 }

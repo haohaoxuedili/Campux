@@ -74,6 +74,13 @@ export function AccountMergeDialog({
       // 掩码邮箱不能直接填进输入框（会提交错地址），让机主自己填完整地址；
       // 掩码只用于确认「这个旧号绑的是我认识的那个邮箱」。
       setEmail("");
+      // 旧账号没绑邮箱：预览能查到但后续必然无法验证归属，
+      // 不让用户白填一个邮箱去撞 MERGE_PROOF_UNAVAILABLE，直接给出管理员指引。
+      if (!data.preview.oldEmailMasked) {
+        setHint("旧账号没有绑定邮箱，无法通过邮箱验证码确认归属，自助合并不可用，请联系墙管理员处理。");
+      } else {
+        setHint("");
+      }
       // 注意措辞：合并后保留的是**当前**账号（QQ 不变），旧账号被停用。
       if (data.preview.oldQqUin !== currentQqUin) {
         setMessage(
