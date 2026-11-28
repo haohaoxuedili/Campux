@@ -43,6 +43,7 @@ import {
   operateModeKey,
   normalizeOperateMode,
   operateEverManualKey,
+  readTenantEverManual,
   manualPublishTemplateKey,
   manualWallQqKey,
   normalizeManualPublishTemplate,
@@ -161,6 +162,7 @@ function normalizeMetadata(entries: Array<{ key: string; value: unknown }>) {
     operateMode: normalizeOperateMode(record[operateModeKey]),
     // 粘性标记：这堵墙是否曾处于无 Bot 模式（切回 bot 后仍为 true）。
     // 「绑定之前的账号」提示只对经历过模式切换的墙有意义，前端按它决定要不要弹。
+    // 先给保守值，下面 readPublicMetadata 会用 readTenantEverManual 覆盖成权威结果。
     operateEverManual: record[operateEverManualKey] === true || normalizeOperateMode(record[operateModeKey]) === "manual",
     manualPublishTemplate: normalizeManualPublishTemplate(record[manualPublishTemplateKey]),
     manualWallQq: normalizeManualWallQq(record[manualWallQqKey]),
@@ -235,6 +237,14 @@ async function readPublicMetadata(tenantId: string, includeAdminLimits = false) 
   const metadata = normalizeMetadata(entries);
   if (includeAdminLimits) {
     metadata.publishRateLimits = await readTenantPublishRateLimits(prisma, tenantId);
+  }
+  // 粘性标记的权威值来自 readTenantEverManual：它会按当前模式与审计历史自愈推断，
+  // 与登录、/api/me、/api/me/account-merge 的判定保持同一口径
+  //（normalizeMetadata 只看标记行，存量墙在回写成功前会漏判）。
+  try {
+    metadata.operateEverManual = await readTenantEverManual(prisma, tenantId);
+  } catch {
+    // 推断失败时保留 normalizeMetadata 的保守值。
   }
   // 插件开关从 tenant_metadata.plugin_config 读取，保留对前端公开 metadata 的
   // 字段兼容性（投稿页、稿件事件的开关均走这里）。
@@ -427,6 +437,14 @@ export function registerMetadataRoutes(app: FastifyInstance, config: CampuxConfi
 
     if (body.slug !== undefined && body.slug !== context.selectedTenant.slug) {
       return reply.code(400).send({ message: "访问标识创建后不可修改" });
+    }
+
+    // 前置校验：hourly/daily 频率对在下面事务里才校验，这里先按同样规则预检一次，
+    // 让「开启游客投稿并切换」在被拒绝的请求上不留下任何副作用（插件开关尚未写入）。
+    if (body.publishRateLimitHourly !== undefined && body.publishRateLimitDaily !== undefined) {
+      if (!isValidPublishRateLimits({ hourly: body.publishRateLimitHourly, daily: body.publishRateLimitDaily })) {
+        return reply.code(400).send({ message: "每小时上限 × 12 不能超过每日上限" });
+      }
     }
 
     // 「开启游客投稿并切换」：先把插件开关打开，再继续走本次 PATCH 的其余字段。

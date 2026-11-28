@@ -13,7 +13,7 @@ import {
   readRegistrationEmailPolicy,
 } from "../lib/registration-email-policy";
 import { officialMailerAvailable, readTenantMailSenderConfig, sendTenantMail } from "../lib/tenant-mail-sender";
-import { buildMergePreview, findMergeCandidate, isMergeScopeSingleTenant, maskEmailForPreview, mergeUserAccounts, resolveActiveAccount, shouldPromptAccountMerge, UserMergeError } from "../lib/user-merge";
+import { buildMergePreview, findMergeCandidate, isMergeScopeSingleTenant, isSameUserQqUin, maskEmailForPreview, mergeUserAccounts, resolveActiveAccount, shouldPromptAccountMerge, UserMergeError } from "../lib/user-merge";
 import { prisma } from "../lib/prisma";
 import { toMembership, toPublicUser, toTenantSummary } from "../lib/serializers";
 import { resolveEffectiveTenantMembership } from "../lib/tenant-access";
@@ -1325,6 +1325,13 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
       oldQqUin: body.oldQqUin,
     });
     if (!candidate) {
+      // 先区分「输了自己的 QQ」：账号存在且未合并，语义与「查无此号」完全不同。
+      if (await isSameUserQqUin(prisma, { targetUserId: context.user.id, oldQqUin: body.oldQqUin })) {
+        return reply.code(400).send({
+          code: "SAME_USER",
+          message: "这是当前登录账号自己的 QQ 号，无需绑定。请输入注册旧账号时用的另一个 QQ 号。",
+        });
+      }
       return reply.code(404).send({
         code: "OLD_NOT_FOUND",
         message: "没有找到这个 QQ 号对应的可合并旧账号：该 QQ 号没有注册过账号，或已经合并过。"
@@ -1413,6 +1420,13 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
       oldQqUin: body.oldQqUin,
     });
     if (!candidate) {
+      // 与 preview / request-code 口径一致：输自己的 QQ 单独提示。
+      if (await isSameUserQqUin(prisma, { targetUserId: context.user.id, oldQqUin: body.oldQqUin })) {
+        return reply.code(400).send({
+          code: "SAME_USER",
+          message: "这是当前登录账号自己的 QQ 号，无需绑定。请输入注册旧账号时用的另一个 QQ 号。",
+        });
+      }
       return reply.code(404).send({
         code: "OLD_NOT_FOUND",
         message: "没有找到这个 QQ 号对应的可合并旧账号：该 QQ 号没有注册过账号，或已经合并过。"

@@ -114,6 +114,30 @@ export function maskEmailForPreview(email: string | null): string | null {
 }
 
 /**
+ * 旧 QQ 号是否指向当前账号自己。
+ *
+ * `findMergeCandidate` 对这种情况同样返回 null（id 相同被排除），
+ * 但语义完全不同：账号存在、未合并，只是「不能合并到自己」。
+ * 调用方先用它区分，避免把「输了自己的 QQ」误报成「账号不存在」。
+ */
+export async function isSameUserQqUin(
+  client: typeof prisma | Prisma.TransactionClient,
+  input: { targetUserId: string; oldQqUin: string },
+): Promise<boolean> {
+  let oldQqUin: bigint;
+  try {
+    oldQqUin = BigInt(input.oldQqUin);
+  } catch {
+    return false;
+  }
+  const user = await client.user.findUnique({
+    where: { qqUin: oldQqUin },
+    select: { id: true },
+  });
+  return user?.id === input.targetUserId;
+}
+
+/**
  * 生成合并预览。
  *
  * 跨墙限制在这里就要暴露（而不是等到最后提交）：
@@ -134,6 +158,14 @@ export async function buildMergePreview(input: {
   }
   const old = await findMergeCandidate(prisma, input);
   if (!old) {
+    // 输入的是当前账号自己的 QQ：账号存在且未合并，给独立提示而不是「查无此号」。
+    if (await isSameUserQqUin(prisma, input)) {
+      return {
+        ok: false,
+        code: "SAME_USER",
+        reason: "这是当前登录账号自己的 QQ 号，无需绑定。请输入注册旧账号时用的另一个 QQ 号。",
+      };
+    }
     return {
       ok: false,
       reason: "没有找到这个 QQ 号对应的可合并旧账号：该 QQ 号没有注册过账号，或已经合并过。"
