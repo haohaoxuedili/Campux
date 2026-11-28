@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { LoaderIcon } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -43,6 +43,7 @@ export function AccountMergeDialog({
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState("");
+  const [hint, setHint] = useState("");
   const [codeSent, setCodeSent] = useState(false);
 
   useEffect(() => {
@@ -52,6 +53,7 @@ export function AccountMergeDialog({
       setCode("");
       setPreview(null);
       setMessage("");
+      setHint("");
       setCodeSent(false);
     }
   }, [open]);
@@ -81,7 +83,16 @@ export function AccountMergeDialog({
       }
     } catch (caught) {
       setPreview(null);
-      setMessage(caught instanceof Error ? caught.message : "查询失败");
+      const message = caught instanceof Error ? caught.message : "查询失败";
+      setMessage(message);
+      // 查无此号时顺手给一条出口提示：多数情况是「QQ 号输错了」或「旧号没绑邮箱无法自助合并」。
+      if (caught instanceof ApiError && caught.code === "OLD_NOT_FOUND") {
+        setHint(
+          "确认你输入的是注册旧账号时用的 QQ 号。若旧账号没有绑定邮箱，自助合并无法验证归属，请联系墙管理员处理。",
+        );
+      } else {
+        setHint("");
+      }
     } finally {
       setBusy(false);
     }
@@ -151,6 +162,7 @@ export function AccountMergeDialog({
                   setOldQqUin(event.target.value.replace(/\D/g, ""));
                   setPreview(null);
                   setCodeSent(false);
+                  setHint("");
                 }}
               />
               <Button variant="outline" disabled={busy || oldQqUin.length < 5} onClick={() => void loadPreview()}>
@@ -195,6 +207,11 @@ export function AccountMergeDialog({
           {message ? (
             <p className="rounded-md bg-amber-50 px-2.5 py-2 text-xs font-bold leading-5 text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
               {message}
+            </p>
+          ) : null}
+          {hint ? (
+            <p className="rounded-md bg-slate-50 px-2.5 py-2 text-xs font-semibold leading-5 text-slate-600 dark:bg-slate-950/40 dark:text-slate-300">
+              {hint}
             </p>
           ) : null}
 

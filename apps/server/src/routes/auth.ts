@@ -5,7 +5,7 @@ import { randomInt } from "node:crypto";
 import { z } from "zod";
 import { clearSessionCookie, createSession, findActiveBan, getCookie, getSessionContext, hashToken, requireSession, sessionCookieName, setSessionCookie } from "../lib/auth";
 import { generateEmailCode, hashEmailCode, normalizeEmail, sendEmail, sendVerificationEmail } from "../lib/email";
-import { readTenantOperateMode, resolvePasswordResetChannel } from "../lib/tenant-metadata";
+import { readTenantEverManual, readTenantOperateMode, resolvePasswordResetChannel } from "../lib/tenant-metadata";
 import { readTenantPluginConfig } from "../lib/tenant-plugin-config";
 import {
   checkQqEmailMatchesQqUin,
@@ -391,6 +391,8 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
       const token = await createSession(user.id, hostTenant.id);
       setSessionCookie(reply, token);
       const visibleMemberships = hostMembership === undefined ? [] : [toMembership(hostMembership)];
+      // 提示绑定旧账号的前提：这堵墙经历过无 Bot 模式，否则不存在「旧账号」。
+      const everManual = await readTenantEverManual(prisma, hostTenant.id);
 
       return {
         authenticated: true,
@@ -402,7 +404,7 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
         needsTenantSelection: false,
         hostLocked: true,
         // 靠私聊 Bot 建号、还没绑邮箱的同学：墙域名登录也要提示绑定旧账号（与通用分支一致）。
-        shouldPromptAccountMerge: shouldPromptAccountMerge(user),
+        shouldPromptAccountMerge: shouldPromptAccountMerge(user) && everManual,
         ...(mergedNotice ? { mergedAccount: mergedNotice } : {}),
       };
     }
@@ -427,6 +429,8 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
     const selectedTenantId = singleModeTenantId && singleModeMembership ? singleModeTenantId : onlyMembership?.tenantId ?? null;
     const token = await createSession(user.id, selectedTenantId);
     setSessionCookie(reply, token);
+    // 提示绑定旧账号的前提：目标墙经历过无 Bot 模式，否则不存在「旧账号」。
+    const everManual = selectedTenantId ? await readTenantEverManual(prisma, selectedTenantId) : false;
 
     if (singleModeTenantId && singleModeMembership) {
       const tenant = await prisma.tenant.findUnique({
@@ -449,7 +453,7 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
         needsTenantSelection: false,
         hostLocked: false,
         // 靠私聊 Bot 建号、且还没绑过邮箱的同学：提示他把之前的网页账号绑过来。
-        shouldPromptAccountMerge: shouldPromptAccountMerge(user),
+        shouldPromptAccountMerge: shouldPromptAccountMerge(user) && everManual,
         ...(mergedNotice ? { mergedAccount: mergedNotice } : {}),
       };
     }
@@ -465,7 +469,7 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
       needsTenantSelection: !selectedTenantId && (visibleMemberships.length > 1 || systemAccessibleTenants.length > 0),
       hostLocked: false,
       // 靠私聊 Bot 建号、且还没绑过邮箱的同学：提示他把之前的网页账号绑过来。
-      shouldPromptAccountMerge: shouldPromptAccountMerge(user),
+      shouldPromptAccountMerge: shouldPromptAccountMerge(user) && everManual,
       ...(mergedNotice ? { mergedAccount: mergedNotice } : {}),
     };
   }
@@ -1215,6 +1219,9 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
     const systemAccessibleTenants = await listSystemAccessibleTenants(context.user.systemRole);
     const visibleMemberships = context.memberships.filter((membership) => membership.tenant.status !== "archived");
     const needsTenantSelection = !context.selectedTenant && (visibleMemberships.length > 1 || systemAccessibleTenants.length > 0);
+    // 「绑定之前的账号」提示只对经历过无 Bot 模式的墙有意义：
+    // 一直用机器人运营的墙里不存在「无 Bot 期网页注册的旧账号」，弹窗必然查无此号。
+    const everManual = context.selectedTenant ? await readTenantEverManual(prisma, context.selectedTenant.id) : false;
 
     return {
       authenticated: true,
@@ -1229,7 +1236,10 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
       needsTenantSelection,
       hostLocked: Boolean(context.hostTenant),
       // 首次登录引导：刷新页面后仍需恢复这个提示，所以放在 /api/me 里一起下发。
-      shouldPromptAccountMerge: shouldPromptAccountMerge(context.user) && context.selectedMembership !== null,
+      // 仅当这堵墙真的经历过无 Bot 模式（粘性标记）才提示。
+      shouldPromptAccountMerge: shouldPromptAccountMerge(context.user)
+        && context.selectedMembership !== null
+        && everManual,
     };
   });
 
@@ -1263,8 +1273,13 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
     if (!tenantId) {
       return { shouldPrompt: false, candidate: null };
     }
+    const everManual = await readTenantEverManual(prisma, tenantId);
+    if (!everManual) {
+      // 从未处于无 Bot 模式的墙没有「旧账号」可言：明确告知不适用，前端据此隐藏入口。
+      return { shouldPrompt: false, candidate: null, applicable: false };
+    }
     const shouldPrompt = shouldPromptAccountMerge(context.user) && context.selectedMembership !== null;
-    return { shouldPrompt, candidate: null, email: context.user.email ?? null };
+    return { shouldPrompt, candidate: null, email: context.user.email ?? null, applicable: true };
   });
 
   // 校验「之前账号的 QQ 号」并给出预览（不落库）。
@@ -1310,7 +1325,11 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
       oldQqUin: body.oldQqUin,
     });
     if (!candidate) {
-      return reply.code(404).send({ message: "没有找到这个 QQ 号对应的可合并旧账号" });
+      return reply.code(404).send({
+        code: "OLD_NOT_FOUND",
+        message: "没有找到这个 QQ 号对应的可合并旧账号：该 QQ 号没有注册过账号，或已经合并过。"
+          + "如果之前的账号是用别的 QQ 号注册的，请改用那个 QQ 号查询。",
+      });
     }
     // 跨墙的旧号不能自助合并：在发码前就拒绝，避免用户白收一次验证码。
     if (!await isMergeScopeSingleTenant(prisma, { oldQqUin: body.oldQqUin, tenantId })) {
@@ -1394,7 +1413,11 @@ export function registerAuthRoutes(app: FastifyInstance, config: CampuxConfig) {
       oldQqUin: body.oldQqUin,
     });
     if (!candidate) {
-      return reply.code(404).send({ message: "没有找到这个 QQ 号对应的可合并旧账号" });
+      return reply.code(404).send({
+        code: "OLD_NOT_FOUND",
+        message: "没有找到这个 QQ 号对应的可合并旧账号：该 QQ 号没有注册过账号，或已经合并过。"
+          + "如果之前的账号是用别的 QQ 号注册的，请改用那个 QQ 号查询。",
+      });
     }
     const email = normalizeEmail(candidate.email ?? "");
     if (!email) {

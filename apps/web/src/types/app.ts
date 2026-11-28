@@ -95,7 +95,8 @@ export type MeResponse =
       activeBan: ActiveBan | null;
       needsTenantSelection: boolean;
       hostLocked: boolean;
-      /** 靠私聊 Bot 建号、尚未绑邮箱的账号：提示把之前的网页账号绑过来 */
+      /** 靠私聊 Bot 建号、尚未绑邮箱的账号：提示把之前的网页账号绑过来。
+       * 服务端只在「这堵墙经历过无 Bot 模式」时才置 true（粘性标记）。 */
       shouldPromptAccountMerge?: boolean;
       /** 用已合并旧号的凭据登录时返回：说明已登录到合并后的账号 */
       mergedAccount?: { mergedFromQqUin: string; message: string };
@@ -174,6 +175,9 @@ export type TenantMetadata = {
   enableGuestSubmission?: boolean;
   /** 运营模式：manual 为无 Bot 模式，审核通过的稿件进入待发布列表 */
   operateMode?: "bot" | "manual";
+  /** 粘性标记：这堵墙是否曾处于无 Bot 模式（切回 bot 后仍为 true）。
+   * 「绑定之前的账号」提示只对经历过模式切换的墙有意义。 */
+  operateEverManual?: boolean;
   /** 无 Bot 模式手动发说说用的文案模板与渲染图角落墙号 QQ */
   manualPublishTemplate?: { customText: string; suffixText: string; includePostId: boolean; includeAuthorQq: boolean };
   manualWallQq?: string;

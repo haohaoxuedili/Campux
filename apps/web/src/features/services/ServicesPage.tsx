@@ -297,7 +297,9 @@ export function ServicesPage({
               <ChevronRightIcon className="size-4 shrink-0 text-slate-400 dark:text-slate-500" />
             </button>
             ) : null}
-            {/* 账号合并入口：登录时跳过的同学可以在这里补做。 */}
+            {/* 账号合并入口：登录时跳过的同学可以在这里补做。
+                只对经历过无 Bot 模式的墙展示——一直用机器人运营的墙没有「旧账号」可绑。 */}
+            {metadata.operateEverManual ? (
             <button
               type="button"
               onClick={() => setAccountMergeOpen(true)}
@@ -314,6 +316,7 @@ export function ServicesPage({
               </span>
               <ChevronRightIcon className="size-4 shrink-0 text-slate-400 dark:text-slate-500" />
             </button>
+            ) : null}
           </ServiceGroup>
 
           {campusServices.length > 0 ? (

@@ -99,12 +99,13 @@ available = 游客投稿已开启
 
 ### 确实想先开墙再补配置
 
-可以显式确认。两条路径都支持：
+被拦下时会给出两个选择，两条路径（开墙向导 / 墙面设置）行为一致：
 
-- **开墙向导**：点「无 Bot 模式运营」被拒后，会弹确认框；确认后带上 `confirmNoIngress: true` 重试
-- **墙面设置**：保存被拒后弹确认框，确认后重试
+- **开启「游客投稿」并切换（推荐）**：一次请求带上 `enableGuestSubmissionOnManual: true`，
+  同时打开插件并完成切换，不再出现「切完没人能注册」的空窗
+- **不开插件、仍切换**：带上 `confirmNoIngress: true` 重试
 
-确认后墙会正常开通，但**页面会持续提示**你没有进站通道（见下一节的红条），
+选择后者时墙会正常开通，但**页面会持续提示**你没有进站通道（见下一节的红条），
 直到你去开启插件为止。
 
 ---
@@ -948,12 +949,13 @@ auditLog: post.recall.manual_complete
 
 ### 13.2 系统怎么提示
 
-管理员切换运营模式后，**未绑邮箱**的账号下次登录时，会弹「绑定之前的账号」对话框。
+墙**经历过无 Bot 模式**（粘性标记 `operate_ever_manual`，切回机器人模式后仍记录）之后，**未绑邮箱**的账号下次登录时，会弹「绑定之前的账号」对话框。
+从没切过模式的墙不会弹——一直用机器人运营的墙里不存在「无 Bot 期网页注册的旧账号」。
 
-提示条件（`shouldPromptAccountMerge`）：
+提示条件（`shouldPromptAccountMerge` + 粘性标记）：
 
 ```text
-email IS NULL  AND  mergedAt IS NULL
+operate_ever_manual = true  AND  email IS NULL  AND  mergedAt IS NULL
 ```
 
 也就是说：

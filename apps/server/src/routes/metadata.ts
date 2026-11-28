@@ -4,11 +4,12 @@ import { pipeline } from "node:stream/promises";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { CampuxConfig } from "@campux/config";
+import type { Prisma } from "@campux/db";
 import { requireTenantContext, requireTenantRole } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { compressImageBuffer, uploadAttachmentBytes } from "../lib/attachments";
 import { prisma } from "../lib/prisma";
-import { readTenantPluginConfig } from "../lib/tenant-plugin-config";
+import { readTenantPluginConfig, tenantPluginConfigKey } from "../lib/tenant-plugin-config";
 import { readSvgAvatarDataUrl } from "../lib/svg-avatars";
 import { assertTenantLogoUpload, tenantLogoMaxBytes } from "../lib/tenant-logo-upload";
 import {
@@ -41,6 +42,7 @@ import {
   normalizeFollowedPostCommentNotifyEnabled,
   operateModeKey,
   normalizeOperateMode,
+  operateEverManualKey,
   manualPublishTemplateKey,
   manualWallQqKey,
   normalizeManualPublishTemplate,
@@ -68,6 +70,7 @@ const publicMetadataKeys = [
   publishLlmSummaryEnabledKey,
   followedPostCommentNotifyEnabledKey,
   operateModeKey,
+  operateEverManualKey,
   manualPublishTemplateKey,
   manualWallQqKey,
 ] as const;
@@ -111,6 +114,8 @@ const patchMetadataSchema = z.object({
   manualWallQq: z.string().trim().max(20).optional(),
   // 明确切到无 Bot 模式时，若本墙没有任何自助进站通道，必须显式确认要照常开启。
   confirmNoIngress: z.boolean().optional(),
+  // 切到无 Bot 模式时顺手开启「游客投稿」插件：确认弹窗里选择「开启并切换」时传 true。
+  enableGuestSubmissionOnManual: z.boolean().optional(),
 });
 
 function normalizeMetadata(entries: Array<{ key: string; value: unknown }>) {
@@ -154,6 +159,9 @@ function normalizeMetadata(entries: Array<{ key: string; value: unknown }>) {
     enableAnonymousAvatarSelection: false,
     followedPostCommentNotifyEnabled: normalizeFollowedPostCommentNotifyEnabled(record[followedPostCommentNotifyEnabledKey]),
     operateMode: normalizeOperateMode(record[operateModeKey]),
+    // 粘性标记：这堵墙是否曾处于无 Bot 模式（切回 bot 后仍为 true）。
+    // 「绑定之前的账号」提示只对经历过模式切换的墙有意义，前端按它决定要不要弹。
+    operateEverManual: record[operateEverManualKey] === true || normalizeOperateMode(record[operateModeKey]) === "manual",
     manualPublishTemplate: normalizeManualPublishTemplate(record[manualPublishTemplateKey]),
     manualWallQq: normalizeManualWallQq(record[manualWallQqKey]),
     availableFonts: [] as string[],
@@ -424,7 +432,7 @@ export function registerMetadataRoutes(app: FastifyInstance, config: CampuxConfi
     const tenantUpdate: { name?: string; themeColor?: string } = {};
     if (body.tenantName !== undefined) tenantUpdate.name = body.tenantName;
     if (body.themeColor !== undefined) tenantUpdate.themeColor = body.themeColor;
-    const updates: Array<{ key: string; value: string | number | string[] | boolean | { hourly: number; daily: number } | Array<{ title: string; description?: string | undefined; url?: string | undefined }> | ManualPublishTemplate }> = [];
+    const updates: Array<{ key: string; value: Prisma.InputJsonValue }> = [];
     if (body.brand !== undefined) {
       updates.push({ key: "brand", value: body.brand });
     }
@@ -481,9 +489,21 @@ export function registerMetadataRoutes(app: FastifyInstance, config: CampuxConfi
     }
     if (body.operateMode !== undefined) {
       updates.push({ key: operateModeKey, value: body.operateMode });
+      // 粘性标记：一旦切到无 Bot 模式就永久记录「这堵墙经历过模式切换」。
+      // 「绑定之前的账号」提示以它为准，切回 bot 后也不会对从未切换过的墙误弹。
+      if (body.operateMode === "manual") {
+        updates.push({ key: operateEverManualKey, value: true });
+      }
+      // 选择「开启游客投稿并切换」：把唯一进站通道一并打开，避免切完模式
+      // 还要再跑一趟插件配置，也省掉 409 → 确认 → 重试的绕路。
+      if (body.operateMode === "manual" && body.enableGuestSubmissionOnManual === true) {
+        const pluginConfig = await readTenantPluginConfig(prisma, context.selectedTenant.id);
+        updates.push({ key: tenantPluginConfigKey, value: { ...pluginConfig, guestSubmission: { enabled: true } } });
+      }
       // 切到无 Bot 模式时校验进站通道：没有游客投稿 / 聚合登录自动建号，
       // 普通用户就无法注册进墙，管理员也无法代为创建账号。
-      if (body.operateMode === "manual") {
+      // 选择「开启游客投稿并切换」时本次请求已写入插件配置，无需再拦。
+      if (body.operateMode === "manual" && body.enableGuestSubmissionOnManual !== true) {
         const ingress = await readTenantIngressAvailabilityFromDb(prisma, context.selectedTenant.id);
         if (!ingress.available && body.confirmNoIngress !== true) {
           return reply.code(409).send({

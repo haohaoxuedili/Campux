@@ -156,29 +156,48 @@ export function OnboardingWizard({
       // 没有任何自助进站通道时服务端会拒绝（409 NO_USER_INGRESS）。这里给出明确选择：
       // 先去开游客投稿，或者确认「先开通、之后再补」，否则向导会卡死在这一步。
       if (next === "manual" && caught instanceof ApiError && caught.code === "NO_USER_INGRESS") {
-        const confirmed = window.confirm(
+        // 与管理页一致的两条路：先开「游客投稿」再切（推荐），或明知没有进站通道仍要切。
+        const choice = window.prompt(
           `${message}
 
-仍然切换到无 Bot 模式吗？
-（切换后普通同学暂时无法注册，请尽快到「管理 · 插件配置」开启「游客投稿」。）`,
+输入 1：开启「游客投稿」并切换到无 Bot 模式（推荐）
+输入 2：不开插件，仍切换到无 Bot 模式
+输入其他内容或留空：取消切换`,
+          "1",
         );
-        if (!confirmed) {
-          toast.info("已取消切换。请先在「管理 · 插件配置」开启「游客投稿」。");
-          return;
+        const normalized = (choice ?? "").trim();
+        if (normalized === "1") {
+          try {
+            await api("/api/admin/tenant/metadata", {
+              method: "PATCH",
+              body: JSON.stringify({ operateMode: "manual", enableGuestSubmissionOnManual: true }),
+            });
+            setOperateMode("manual");
+            toast.success("已开启「游客投稿」并切换为无 Bot 模式运营", { duration: 10000 });
+            setStep("done");
+            return;
+          } catch (retryError) {
+            toast.error(retryError instanceof Error ? retryError.message : "切换运营模式失败");
+            return;
+          }
         }
-        try {
-          await api("/api/admin/tenant/metadata", {
-            method: "PATCH",
-            body: JSON.stringify({ operateMode: "manual", confirmNoIngress: true }),
-          });
-          setOperateMode("manual");
-          toast.success("已切换为无 Bot 模式运营（请尽快开启游客投稿）", { duration: 10000 });
-          setStep("done");
-          return;
-        } catch (retryError) {
-          toast.error(retryError instanceof Error ? retryError.message : "切换运营模式失败");
-          return;
+        if (normalized === "2") {
+          try {
+            await api("/api/admin/tenant/metadata", {
+              method: "PATCH",
+              body: JSON.stringify({ operateMode: "manual", confirmNoIngress: true }),
+            });
+            setOperateMode("manual");
+            toast.success("已切换为无 Bot 模式运营（请尽快开启游客投稿）", { duration: 10000 });
+            setStep("done");
+            return;
+          } catch (retryError) {
+            toast.error(retryError instanceof Error ? retryError.message : "切换运营模式失败");
+            return;
+          }
         }
+        toast.info("已取消切换。请先在「管理 · 插件配置」开启「游客投稿」。");
+        return;
       }
       toast.error(message);
     } finally {

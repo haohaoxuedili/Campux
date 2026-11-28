@@ -134,7 +134,12 @@ export async function buildMergePreview(input: {
   }
   const old = await findMergeCandidate(prisma, input);
   if (!old) {
-    return { ok: false, reason: "没有找到这个 QQ 号对应的可合并旧账号", code: "OLD_NOT_FOUND" };
+    return {
+      ok: false,
+      reason: "没有找到这个 QQ 号对应的可合并旧账号：该 QQ 号没有注册过账号，或已经合并过。"
+        + "如果之前的账号是用别的 QQ 号注册的，请改用那个 QQ 号查询。",
+      code: "OLD_NOT_FOUND",
+    };
   }
   if (!await isMergeScopeSingleTenant(prisma, { oldQqUin: input.oldQqUin, tenantId: input.tenantId })) {
     return {

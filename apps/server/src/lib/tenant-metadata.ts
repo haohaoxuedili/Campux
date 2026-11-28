@@ -188,6 +188,27 @@ export async function readTenantOperateMode(client: MetadataClient, tenantId: st
   return normalizeOperateMode(entry?.value);
 }
 
+// 粘性标记：这堵墙是否**曾经**处于无 Bot 模式。
+// 「绑定之前的账号」提示只对经历过模式切换的墙有意义——一直用机器人运营的墙里
+// 根本不存在「无 Bot 期网页注册的旧账号」，弹窗只会让用户困惑（输 QQ 号必然查不到）。
+// 用粘性标记而不是当前模式：切回 bot 后历史事实仍在，提示口径保持一致。
+export const operateEverManualKey = "operate_ever_manual";
+
+export async function readTenantEverManual(client: MetadataClient, tenantId: string): Promise<boolean> {
+  const entry = await client.tenantMetadata.findUnique({
+    where: {
+      tenantId_key: {
+        tenantId,
+        key: operateEverManualKey,
+      },
+    },
+    select: {
+      value: true,
+    },
+  });
+  return entry?.value === true;
+}
+
 // 无 Bot 模式专属：管理员手动发说说时用来拼配文的模板，以及配置进站/渲染用的墙号 QQ。
 // 机器人模式沿用 BotAccount.publishTextTemplate，这里只在 system_operator/无 bot 场景生效。
 export const manualPublishTemplateKey = "manual_publish_template";

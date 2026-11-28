@@ -697,7 +697,7 @@ export function AdminPage({
         await reportOperateModeSideEffects(form.operateMode);
       }
     } catch (caught) {
-      // 进站通道未开时服务端返回 409 + NO_USER_INGRESS：引导运营者先开插件，或确认照常切换。
+      // 进站通道未开时服务端返回 409 + NO_USER_INGRESS：引导运营者开启插件后切换，或确认照常切换。
       if (caught instanceof ApiError && caught.code === "NO_USER_INGRESS") {
         await confirmOperateModeWithoutIngress();
       } else {
@@ -708,56 +708,111 @@ export function AdminPage({
     }
   }
 
-  /** 没有开启游客投稿时，切换 manual 需要运营者明确确认。 */
-  async function confirmOperateModeWithoutIngress() {
-    const confirmed = window.confirm(
-      "这个校园墙还没有开启「游客投稿」，这是新同学自助注册的唯一通道。\n"
-      + "无 Bot 模式没有「私聊墙号自动建号」，普通同学将无法注册进入本墙，管理员也无法代为创建账号。\n\n"
-      + "仍然切换到无 Bot 模式吗？（建议先去「插件配置」开启游客投稿）",
+  /**
+   * 没有开启游客投稿时，切换 manual 需要运营者明确选择：
+   * 开启游客投稿后切换（推荐），或明知没有进站通道仍要切换。
+   * 之前用 window.confirm 只能「继续/取消」，运营者要么手改插件配置再回来，
+   * 要么带着「没人能注册」的坑上线；这里把「开启插件」做成一键动作。
+   */
+  async function confirmOperateModeWithoutIngress(): Promise<"enableAndSwitch" | "switchAnyway" | null> {
+    const choice = window.prompt(
+      "这个校园墙还没有开启「游客投稿」，这是无 Bot 模式下新同学自助注册的唯一通道。\n"
+      + "不开启时普通同学将无法注册进入本墙，管理员也无法代为创建账号。\n\n"
+      + "输入 1：开启「游客投稿」并切换到无 Bot 模式（推荐）\n"
+      + "输入 2：不开插件，仍切换到无 Bot 模式\n"
+      + "输入其他内容或留空：取消切换",
+      "1",
     );
-    if (!confirmed) {
-      return;
+    const normalized = (choice ?? "").trim();
+    if (normalized === "1") {
+      setBusy(true);
+      try {
+        // 重试必须带上完整表单：只发 operateMode 会把本次其它改动（名称、模板、墙号 QQ…）丢掉。
+        await api("/api/admin/tenant/metadata", {
+          method: "PATCH",
+          body: JSON.stringify({
+            tenantName: form.tenantName,
+            themeColor: form.themeColor,
+            brand: form.brand,
+            banner: form.banner,
+            logoUrl: form.logoUrl.trim(),
+            pendingPostLimit: form.pendingPostLimit,
+            publishRateLimitHourly: form.publishRateLimitHourly,
+            publishRateLimitDaily: form.publishRateLimitDaily,
+            postRules: form.postRulesText.split(/\r?\n/).map((rule) => rule.trim()).filter(Boolean),
+            services: prepareServiceEntriesForSave(form.services),
+            imageCompressionEnabled: form.imageCompressionEnabled,
+            imageCompressionQuality: form.imageCompressionQuality,
+            imageCompressionMaxDimension: form.imageCompressionMaxDimension,
+            imageMaxSizeMb: normalizeImageMaxSizeDraft(imageMaxSizeDraft, form.imageMaxSizeMb),
+            publishMode: form.publishMode,
+            publishAccumulateMinImages: form.publishAccumulateMinImages,
+            publishAccumulateMaxImages: form.publishAccumulateMaxImages,
+            publishAccumulateStaleMinutes: form.publishAccumulateStaleMinutes,
+            publishLlmSummaryEnabled: form.publishLlmSummaryEnabled,
+            followedPostCommentNotifyEnabled: form.followedPostCommentNotifyEnabled,
+            manualPublishTemplate: form.manualPublishTemplate,
+            manualWallQq: form.manualWallQq,
+            operateMode: "manual",
+            enableGuestSubmissionOnManual: true,
+          }),
+        });
+        await onSaved();
+        toast.success("已开启「游客投稿」并切换到无 Bot 模式。");
+        await reportOperateModeSideEffects("manual");
+        return "enableAndSwitch";
+      } catch (caught) {
+        toast.error(caught instanceof Error ? caught.message : "切换运营模式失败");
+        return null;
+      } finally {
+        setBusy(false);
+      }
     }
-    setBusy(true);
-    try {
-      // 重试必须带上完整表单：只发 operateMode 会把本次其它改动（名称、模板、墙号 QQ…）丢掉。
-      await api("/api/admin/tenant/metadata", {
-        method: "PATCH",
-        body: JSON.stringify({
-          tenantName: form.tenantName,
-          themeColor: form.themeColor,
-          brand: form.brand,
-          banner: form.banner,
-          logoUrl: form.logoUrl.trim(),
-          pendingPostLimit: form.pendingPostLimit,
-          publishRateLimitHourly: form.publishRateLimitHourly,
-          publishRateLimitDaily: form.publishRateLimitDaily,
-          postRules: form.postRulesText.split(/\r?\n/).map((rule) => rule.trim()).filter(Boolean),
-          services: prepareServiceEntriesForSave(form.services),
-          imageCompressionEnabled: form.imageCompressionEnabled,
-          imageCompressionQuality: form.imageCompressionQuality,
-          imageCompressionMaxDimension: form.imageCompressionMaxDimension,
-          imageMaxSizeMb: normalizeImageMaxSizeDraft(imageMaxSizeDraft, form.imageMaxSizeMb),
-          publishMode: form.publishMode,
-          publishAccumulateMinImages: form.publishAccumulateMinImages,
-          publishAccumulateMaxImages: form.publishAccumulateMaxImages,
-          publishAccumulateStaleMinutes: form.publishAccumulateStaleMinutes,
-          publishLlmSummaryEnabled: form.publishLlmSummaryEnabled,
-          followedPostCommentNotifyEnabled: form.followedPostCommentNotifyEnabled,
-          manualPublishTemplate: form.manualPublishTemplate,
-          manualWallQq: form.manualWallQq,
-          operateMode: "manual",
-          confirmNoIngress: true,
-        }),
-      });
-      await onSaved();
-      toast.success("已切换到无 Bot 模式（未开启进站通道，请尽快补齐游客投稿）");
-      await reportOperateModeSideEffects("manual");
-    } catch (caught) {
-      toast.error(caught instanceof Error ? caught.message : "切换运营模式失败");
-    } finally {
-      setBusy(false);
+    if (normalized === "2") {
+      setBusy(true);
+      try {
+        // 重试必须带上完整表单：只发 operateMode 会把本次其它改动（名称、模板、墙号 QQ…）丢掉。
+        await api("/api/admin/tenant/metadata", {
+          method: "PATCH",
+          body: JSON.stringify({
+            tenantName: form.tenantName,
+            themeColor: form.themeColor,
+            brand: form.brand,
+            banner: form.banner,
+            logoUrl: form.logoUrl.trim(),
+            pendingPostLimit: form.pendingPostLimit,
+            publishRateLimitHourly: form.publishRateLimitHourly,
+            publishRateLimitDaily: form.publishRateLimitDaily,
+            postRules: form.postRulesText.split(/\r?\n/).map((rule) => rule.trim()).filter(Boolean),
+            services: prepareServiceEntriesForSave(form.services),
+            imageCompressionEnabled: form.imageCompressionEnabled,
+            imageCompressionQuality: form.imageCompressionQuality,
+            imageCompressionMaxDimension: form.imageCompressionMaxDimension,
+            imageMaxSizeMb: normalizeImageMaxSizeDraft(imageMaxSizeDraft, form.imageMaxSizeMb),
+            publishMode: form.publishMode,
+            publishAccumulateMinImages: form.publishAccumulateMinImages,
+            publishAccumulateMaxImages: form.publishAccumulateMaxImages,
+            publishAccumulateStaleMinutes: form.publishAccumulateStaleMinutes,
+            publishLlmSummaryEnabled: form.publishLlmSummaryEnabled,
+            followedPostCommentNotifyEnabled: form.followedPostCommentNotifyEnabled,
+            manualPublishTemplate: form.manualPublishTemplate,
+            manualWallQq: form.manualWallQq,
+            operateMode: "manual",
+            confirmNoIngress: true,
+          }),
+        });
+        await onSaved();
+        toast.success("已切换到无 Bot 模式（未开启进站通道，请尽快到「插件配置」补齐游客投稿）");
+        await reportOperateModeSideEffects("manual");
+        return "switchAnyway";
+      } catch (caught) {
+        toast.error(caught instanceof Error ? caught.message : "切换运营模式失败");
+        return null;
+      } finally {
+        setBusy(false);
+      }
     }
+    return null;
   }
 
   /** 切换运营模式后的提醒：manual 提示在途自动发布，bot 提示滞留稿件。 */
@@ -1485,6 +1540,7 @@ export function AdminPage({
                   imageMaxSizeDraft={imageMaxSizeDraft}
                   busy={busy}
                   hasIngress={Boolean(metadata.enableGuestSubmission)}
+                  onGoToPluginConfig={() => onTabChange("pluginConfig")}
                   onFormChange={setForm}
                   onImageMaxSizeDraftChange={setImageMaxSizeDraft}
                   onImageMaxSizeDraftCommit={() => {
@@ -2158,6 +2214,7 @@ function MetadataPanel({
   onImageMaxSizeDraftCommit,
   onSave,
   onUploaded,
+  onGoToPluginConfig,
 }: {
   tenantId: string;
   form: TenantSettingsForm;
@@ -2170,6 +2227,8 @@ function MetadataPanel({
   onImageMaxSizeDraftCommit: () => void;
   onSave: () => void;
   onUploaded: () => Promise<void>;
+  /** 跳到「插件配置」页：开启游客投稿（无 Bot 模式唯一进站通道）用。 */
+  onGoToPluginConfig: () => void;
 }) {
   const [logoUploading, setLogoUploading] = useState(false);
   const [draggedServiceIndex, setDraggedServiceIndex] = useState<number | null>(null);
@@ -2446,9 +2505,20 @@ function MetadataPanel({
                     </div>
                   </div>
                   {!hasIngress ? (
-                    <p className="rounded-md bg-amber-100 px-2 py-1.5 text-xs font-bold text-amber-900 dark:bg-amber-950/60 dark:text-amber-200">
-                      当前没有开启任何自助进站通道：请到「插件配置」开启「游客投稿」，否则普通同学无法注册进入本墙。
-                    </p>
+                    <div className="grid gap-2 rounded-md bg-amber-100 px-2 py-1.5 text-xs font-bold text-amber-900 dark:bg-amber-950/60 dark:text-amber-200">
+                      <p>当前没有开启任何自助进站通道：请开启「游客投稿」插件，否则普通同学无法注册进入本墙。</p>
+                      <div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={busy}
+                          className="h-7 px-2 text-xs"
+                          onClick={onGoToPluginConfig}
+                        >
+                          去插件配置开启
+                        </Button>
+                      </div>
+                    </div>
                   ) : null}
                 </div>
               ) : null}
